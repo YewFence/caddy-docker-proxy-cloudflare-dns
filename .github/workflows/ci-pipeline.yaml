@@ -8,6 +8,10 @@ on:
       - '*'
   pull_request:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   build_binaries:
     name: Build Binaries
@@ -56,10 +60,19 @@ jobs:
         shell: bash
 
       - name: Build Docker Images
+        if: github.ref != 'refs/heads/master' && !startsWith(github.ref, 'refs/tags/v')
         run: ./build-images-linux.sh
-        env:
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
         shell: bash
+        env:
+          PUSH_IMAGES: "false"
+
+      - name: Push Docker Images
+        if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
+        run: ./build-images-linux.sh
+        shell: bash
+        env:
+          PUSH_IMAGES: "true"
+          GITHUB_TOKEN: ${{ github.token }}
 
   windows:
     name: Windows
@@ -82,7 +95,16 @@ jobs:
       #   shell: bash
 
       - name: Build Docker Images
+        if: github.ref != 'refs/heads/master' && !startsWith(github.ref, 'refs/tags/v')
         run: ./build-images-windows.sh
-        env:
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
         shell: bash
+        env:
+          PUSH_IMAGES: "false"
+
+      - name: Push Docker Images
+        if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
+        run: ./build-images-windows.sh
+        shell: bash
+        env:
+          PUSH_IMAGES: "true"
+          GITHUB_TOKEN: ${{ github.token }}

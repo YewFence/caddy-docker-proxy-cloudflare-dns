@@ -8,6 +8,7 @@ This fork ships with the Cloudflare DNS plugin (`github.com/caddy-dns/cloudflare
 ## Upstream sync
 This repo runs a GitHub Actions workflow to sync changes from the upstream `lucaslorentz/caddy-docker-proxy` repository.
 If it can be fast-forwarded, it will update `master` directly; otherwise it opens a PR for manual conflict resolution.
+Then it will automatically try to merge the update into `fork-main`.
 
 ## How does it work?
 The plugin scans Docker metadata, looking for labels indicating that the service or container should be served by Caddy.

@@ -29,16 +29,32 @@ jobs:
       - name: Try fast-forward
         id: ff
         run: |
-          if git merge --ff-only upstream/master; then
-            echo "ff=true" >> "$GITHUB_OUTPUT"
+          git fetch upstream master
+          upstream_ahead=$(git rev-list --count master..upstream/master)
+          echo "upstream_ahead=${upstream_ahead}" >> "$GITHUB_OUTPUT"
+          if [ "${upstream_ahead}" -gt 0 ]; then
+            echo "upstream_has_new=true" >> "$GITHUB_OUTPUT"
           else
-            echo "ff=false" >> "$GITHUB_OUTPUT"
+            echo "upstream_has_new=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "${upstream_ahead}" -eq 0 ]; then
+            echo "ff_success=true" >> "$GITHUB_OUTPUT"
+            echo "master_updated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git merge --ff-only upstream/master; then
+            echo "ff_success=true" >> "$GITHUB_OUTPUT"
+            echo "master_updated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ff_success=false" >> "$GITHUB_OUTPUT"
+            echo "master_updated=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Push fast-forward
-        if: steps.ff.outputs.ff == 'true'
+        if: steps.ff.outputs.master_updated == 'true'
+        id: push_master
         run: git push origin master
       - name: Create PR branch
-        if: steps.ff.outputs.ff != 'true'
+        if: steps.ff.outputs.ff_success != 'true' && steps.ff.outputs.upstream_has_new == 'true'
         id: pr_branch
         run: |
           branch="upstream-sync-$(date +%Y%m%d%H%M%S)"
@@ -46,27 +62,89 @@ jobs:
           git push origin "$branch"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
       - name: Open pull request
-        if: steps.ff.outputs.ff != 'true'
+        if: steps.ff.outputs.ff_success != 'true' && steps.ff.outputs.upstream_has_new == 'true'
         uses: actions/github-script@v7
         with:
           script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const branch = "${{ steps.pr_branch.outputs.branch }}";
-            const head = `${owner}:${branch}`;
-            const base = "master";
-            const title = "chore(upstream): 同步 lucaslorentz/caddy-docker-proxy";
-            const body = [
-              "上游有新改动，自动同步无法 fast-forward。",
-              "",
-              "请在此 PR 中处理冲突并确认合并。"
-            ].join("\n");
-            const prs = await github.rest.pulls.list({
-              owner,
-              repo,
-              head,
-              state: "open"
-            });
-            if (prs.data.length === 0) {
-              await github.rest.pulls.create({ owner, repo, head, base, title, body });
+            try {
+              const owner = context.repo.owner;
+              const repo = context.repo.repo;
+              const branch = "${{ steps.pr_branch.outputs.branch }}";
+              const head = `${owner}:${branch}`;
+              const base = "master";
+              const title = "chore(upstream): sync lucaslorentz/caddy-docker-proxy";
+              const body = [
+                "Upstream has new changes and fast-forward sync failed.",
+                "",
+                "Please resolve conflicts and merge this PR."
+              ].join("\n");
+              const prs = await github.rest.pulls.list({
+                owner,
+                repo,
+                head,
+                state: "open"
+              });
+              if (prs.data.length === 0) {
+                await github.rest.pulls.create({ owner, repo, head, base, title, body });
+              }
+            } catch (error) {
+              core.setFailed(`Failed to open upstream sync PR: ${error.message}`);
+            }
+      - name: Check fork-main status
+        id: fork_status
+        run: |
+          git fetch origin master fork-main
+          if ! git show-ref --verify --quiet refs/remotes/origin/fork-main; then
+            echo "origin/fork-main not found. Please create the fork-main branch first." >&2
+            exit 1
+          fi
+          fork_main_behind=$(git rev-list --count origin/fork-main..master)
+          echo "fork_main_behind=${fork_main_behind}" >> "$GITHUB_OUTPUT"
+          if [ "${fork_main_behind}" -gt 0 ]; then
+            echo "fork_main_needs_merge=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "fork_main_needs_merge=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Merge master into fork-main
+        if: steps.fork_status.outputs.fork_main_needs_merge == 'true'
+        id: fork_merge
+        run: |
+          git checkout -B fork-main origin/fork-main
+          if git merge --no-edit master; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Push fork-main
+        if: steps.fork_merge.outputs.merged == 'true'
+        run: git push origin fork-main
+      - name: Open fork-main merge PR
+        if: steps.fork_merge.outputs.merged == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              const owner = context.repo.owner;
+              const repo = context.repo.repo;
+              const head = "master";
+              const base = "fork-main";
+              const title = "chore(upstream): merge master into fork-main";
+              const body = [
+                "master was updated from upstream, but merging into fork-main caused conflicts.",
+                "",
+                "Please resolve conflicts and merge this PR."
+              ].join("\n");
+              const prs = await github.rest.pulls.list({
+                owner,
+                repo,
+                head: `${owner}:${head}`,
+                base,
+                state: "open"
+              });
+              if (prs.data.length === 0) {
+                await github.rest.pulls.create({ owner, repo, head, base, title, body });
+              }
+            } catch (error) {
+              core.setFailed(`Failed to open fork-main merge PR: ${error.message}`);
             }

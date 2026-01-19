@@ -1,0 +1,72 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/lucaslorentz/caddy-docker-proxy.git
+          git fetch upstream master
+      - name: Try fast-forward
+        id: ff
+        run: |
+          if git merge --ff-only upstream/master; then
+            echo "ff=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ff=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Push fast-forward
+        if: steps.ff.outputs.ff == 'true'
+        run: git push origin master
+      - name: Create PR branch
+        if: steps.ff.outputs.ff != 'true'
+        id: pr_branch
+        run: |
+          branch="upstream-sync-$(date +%Y%m%d%H%M%S)"
+          git checkout -b "$branch" upstream/master
+          git push origin "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+      - name: Open pull request
+        if: steps.ff.outputs.ff != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const branch = "${{ steps.pr_branch.outputs.branch }}";
+            const head = `${owner}:${branch}`;
+            const base = "master";
+            const title = "chore(upstream): 同步 lucaslorentz/caddy-docker-proxy";
+            const body = [
+              "上游有新改动，自动同步无法 fast-forward。",
+              "",
+              "请在此 PR 中处理冲突并确认合并。"
+            ].join("\n");
+            const prs = await github.rest.pulls.list({
+              owner,
+              repo,
+              head,
+              state: "open"
+            });
+            if (prs.data.length === 0) {
+              await github.rest.pulls.create({ owner, repo, head, base, title, body });
+            }

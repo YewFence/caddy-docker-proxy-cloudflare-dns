@@ -74,7 +74,7 @@ services:
       - 443:443/tcp
       - 443:443/udp
     environment:
-      - CADDY_INGRESS_NETWORKS=caddy
+      - CADDY_INGRESS_NETWORKS=caddy-net
     labels:
       # ACME account email for expiry and incident notices
       caddy.email: "you@example.com"

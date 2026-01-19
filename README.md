@@ -1,8 +1,13 @@
-# Caddy-Docker-Proxy 
-[![Build Status](https://dev.azure.com/lucaslorentzlara/lucaslorentzlara/_apis/build/status/lucaslorentz.caddy-docker-proxy?branchName=master)](https://dev.azure.com/lucaslorentzlara/lucaslorentzlara/_build/latest?definitionId=1) [![Go Report Card](https://goreportcard.com/badge/github.com/lucaslorentz/caddy-docker-proxy)](https://goreportcard.com/report/github.com/lucaslorentz/caddy-docker-proxy)
+# Caddy-Docker-Proxy-Cloudflare-DNS
+[![CI Pipeline](https://github.com/YewFence/caddy-docker-proxy-cloudflare-dns/actions/workflows/ci-pipeline.yaml/badge.svg)](https://github.com/YewFence/caddy-docker-proxy-cloudflare-dns/actions/workflows/ci-pipeline.yaml)
 
 ## Introduction
 This plugin enables Caddy to be used as a reverse proxy for Docker containers via labels.
+This fork ships with the Cloudflare DNS plugin (`github.com/caddy-dns/cloudflare`) built in, so you can use DNS-01 challenges without building a custom image.
+
+## Upstream sync
+This repo runs a GitHub Actions workflow to sync changes from the upstream `lucaslorentz/caddy-docker-proxy` repository.
+If it can be fast-forwarded, it will update `master` directly; otherwise it opens a PR for manual conflict resolution.
 
 ## How does it work?
 The plugin scans Docker metadata, looking for labels indicating that the service or container should be served by Caddy.
@@ -13,41 +18,46 @@ Every time a Docker object changes, the plugin updates the Caddyfile and trigger
 
 ## Table of contents
 
-  * [Basic usage example, using docker compose](#basic-usage-example-using-docker-compose)
-  * [Labels to Caddyfile conversion](#labels-to-caddyfile-conversion)
-    + [Tokens and arguments](#tokens-and-arguments)
-    + [Ordering and isolation](#ordering-and-isolation)
-    + [Sites, snippets and global options](#sites-snippets-and-global-options)
-    + [Go templates](#go-templates)
-  * [Template functions](#template-functions)
-    + [upstreams](#upstreams)
-  * [Examples](#examples)
-  * [Docker configs](#docker-configs)
-  * [Proxying services vs containers](#proxying-services-vs-containers)
-    + [Services](#services)
-    + [Containers](#containers)
-  * [Execution modes](#execution-modes)
-    + [Server](#server)
-    + [Controller](#controller)
-    + [Standalone (default)](#standalone-default)
-  * [Caddy CLI](#caddy-cli)
-  * [Docker images](#docker-images)
-    + [Choosing the version numbers](#choosing-the-version-numbers)
-    + [Chosing between default or alpine images](#chosing-between-default-or-alpine-images)
-    + [CI images](#ci-images)
-    + [ARM architecture images](#arm-architecture-images)
-    + [Windows images](#windows-images)
-    + [Custom images](#custom-images)
-  * [Connecting to Docker Host](#connecting-to-docker-host)
-  * [Volumes](#volumes)
-  * [Trying it](#trying-it)
-    + [With Docker Compose (`compose.yaml`)](#with-docker-compose-composeyaml)
-    + [With run commands](#with-run-commands)
-  * [Building it](#building-it)
+- [Caddy-Docker-Proxy-Cloudflare-DNS](#caddy-docker-proxy-cloudflare-dns)
+  - [Introduction](#introduction)
+  - [Upstream sync](#upstream-sync)
+  - [How does it work?](#how-does-it-work)
+  - [Table of contents](#table-of-contents)
+  - [Basic usage example (Docker Compose)](#basic-usage-example-docker-compose)
+  - [Labels to Caddyfile conversion](#labels-to-caddyfile-conversion)
+    - [Tokens and arguments](#tokens-and-arguments)
+    - [Ordering and isolation](#ordering-and-isolation)
+    - [Sites, snippets and global options](#sites-snippets-and-global-options)
+    - [Go templates](#go-templates)
+  - [Template functions](#template-functions)
+    - [upstreams](#upstreams)
+  - [Examples](#examples)
+  - [Docker configs](#docker-configs)
+  - [Proxying services vs containers](#proxying-services-vs-containers)
+    - [Services](#services)
+    - [Containers](#containers)
+  - [Execution modes](#execution-modes)
+    - [Server](#server)
+    - [Controller](#controller)
+    - [Standalone (default)](#standalone-default)
+  - [Caddy CLI](#caddy-cli)
+  - [Docker images](#docker-images)
+    - [Choosing the version numbers](#choosing-the-version-numbers)
+    - [Chosing between default or alpine images](#chosing-between-default-or-alpine-images)
+    - [CI images](#ci-images)
+    - [ARM architecture images](#arm-architecture-images)
+    - [Windows images](#windows-images)
+    - [Custom images](#custom-images)
+  - [Connecting to Docker Host](#connecting-to-docker-host)
+  - [Volumes](#volumes)
+  - [Trying it](#trying-it)
+    - [With Docker Compose (`compose.yaml`)](#with-docker-compose-composeyaml)
+    - [With run commands](#with-run-commands)
+  - [Building it](#building-it)
 
 ## Basic usage example (Docker Compose)
 ```shell
-$ docker network create caddy --ipv6
+$ docker network create caddy-net --ipv6
 ```
 
 > [!NOTE]
@@ -58,27 +68,40 @@ $ docker network create caddy --ipv6
 ```yml
 services:
   caddy:
-    image: lucaslorentz/caddy-docker-proxy:ci-alpine
+    image: ghcr.io/YewFence/caddy-docker-proxy-cloudflare-dns:ci-alpine
     ports:
       - 80:80
       - 443:443/tcp
       - 443:443/udp
     environment:
       - CADDY_INGRESS_NETWORKS=caddy
+    labels:
+      # ACME account email for expiry and incident notices
+      caddy.email: "you@example.com"
+      # Enable Cloudflare DNS-01 using the token from env
+      caddy.acme_dns: cloudflare {env.CF_API_TOKEN}
+      # Use cloudflare for DNS lookups
+      caddy.acme_dns.resolvers: 1.1.1.1
     networks:
-      - caddy
+      - caddy-net
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - caddy_data:/data
     restart: unless-stopped
 
 networks:
-  caddy:
+  caddy-net:
     external: true
 
 volumes:
   caddy_data: {}
 ```
+`caddy/.env`
+```
+# make sure your api token has permission to edit DNS record
+CF_API_TOKEN=your-api-token
+```
+
 ```shell
 $ docker compose up -d
 ```
@@ -89,13 +112,13 @@ services:
   whoami:
     image: traefik/whoami
     networks:
-      - caddy
+      - caddy-net
     labels:
       caddy: whoami.example.com
       caddy.reverse_proxy: "{{upstreams 80}}"
 
 networks:
-  caddy:
+  caddy-net:
     external: true
 ```
 ```shell
@@ -550,8 +573,8 @@ CADDY_DOCKER_NO_SCOPE=<bool, default scope used>
 Check **examples** folder to see how to set them on a Docker Compose file.
 
 ## Docker images
-Docker images are available at Docker hub:
-https://hub.docker.com/r/lucaslorentz/caddy-docker-proxy/
+Docker images for this fork are published to GitHub Container Registry:
+https://ghcr.io/YewFence/caddy-docker-proxy-cloudflare-dns
 
 ### Choosing the version numbers
 The safest approach is to use a full version numbers like 0.1.3.
@@ -582,7 +605,7 @@ Be aware that this needs to be tested further.
 
 This is an example of how to mount the windows Docker pipe using CLI:
 ```shell
-$ docker run --rm -it -v //./pipe/docker_engine://./pipe/docker_engine lucaslorentz/caddy-docker-proxy:ci-nanoserver-ltsc2022
+$ docker run --rm -it -v //./pipe/docker_engine://./pipe/docker_engine ghcr.io/YewFence/caddy-docker-proxy-cloudflare-dns:ci-nanoserver-ltsc2022
 ```
 
 ### Custom images
@@ -657,7 +680,7 @@ $ docker stack rm caddy-docker-demo
 ### With run commands
 
 ```
-$ docker run --name caddy -d -p 443:443 -v /var/run/docker.sock:/var/run/docker.sock lucaslorentz/caddy-docker-proxy:ci-alpine
+$ docker run --name caddy -d -p 443:443 -v /var/run/docker.sock:/var/run/docker.sock ghcr.io/YewFence/caddy-docker-proxy-cloudflare-dns:ci-alpine
 
 $ docker run --name whoami0 -d -l caddy=whoami0.example.com -l "caddy.reverse_proxy={{upstreams 80}}" -l caddy.tls=internal traefik/whoami
 

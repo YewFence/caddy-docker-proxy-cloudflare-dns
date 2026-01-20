@@ -1,0 +1,107 @@
+name: Sync Upstream Releases
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Sync Upstream"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  check_release:
+    runs-on: ubuntu-latest
+    # 如果是 workflow_run 触发，只在 upstream-sync 成功时运行
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      has_new_release: ${{ steps.check.outputs.has_new_release }}
+      latest_tag: ${{ steps.check.outputs.latest_tag }}
+    steps:
+      - name: Check upstream for new release
+        id: check
+        run: |
+          latest_tag=$(git ls-remote --tags --refs https://github.com/lucaslorentz/caddy-docker-proxy.git "v[0-9]*.[0-9]*.[0-9]*" | awk -F/ '{print $3}' | sort -V | tail -n 1)
+          if [ -z "${latest_tag}" ]; then
+            echo "::warning::No upstream release tags found."
+            echo "has_new_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "latest_tag=${latest_tag}" >> "$GITHUB_OUTPUT"
+          # 检查 origin 是否已有此 tag
+          if git ls-remote --tags --refs origin "refs/tags/${latest_tag}" | grep -q .; then
+            echo "Tag ${latest_tag} already exists in origin."
+            echo "has_new_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New release detected: ${latest_tag}"
+            echo "has_new_release=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  trigger_sync:
+    needs: check_release
+    # 只在定时或手动触发时触发同步，workflow_run 触发时跳过（因为已经同步完了）
+    if: needs.check_release.outputs.has_new_release == 'true' && github.event_name != 'workflow_run'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger upstream sync workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'upstream-sync.yml',
+              ref: 'master'
+            });
+            core.info('Triggered upstream-sync.yml, will create tag after it completes.');
+
+  create_tag:
+    needs: check_release
+    # 只在 workflow_run 触发（即 upstream-sync 完成后）且有新 release 时创建 tag
+    if: needs.check_release.outputs.has_new_release == 'true' && github.event_name == 'workflow_run'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork-main
+        uses: actions/checkout@v4
+        with:
+          ref: fork-main
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Pull latest fork-main
+        run: git pull origin fork-main
+
+      - name: Create and push tag on fork-main
+        run: |
+          tag="${{ needs.check_release.outputs.latest_tag }}"
+          git tag -a "${tag}" -m "chore(release): sync upstream ${tag}"
+          git push origin "${tag}"
+
+      - name: Create release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = "${{ needs.check_release.outputs.latest_tag }}";
+            const body = [
+              `Synced from upstream release.`,
+              ``,
+              `Upstream: https://github.com/lucaslorentz/caddy-docker-proxy/releases/tag/${tag}`
+            ].join("\n");
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: tag,
+              body,
+              prerelease: false,
+              draft: false
+            });

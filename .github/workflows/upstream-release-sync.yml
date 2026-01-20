@@ -5,7 +5,7 @@ on:
     - cron: "0 4 * * *"
   workflow_dispatch:
   workflow_run:
-    workflows: ["Sync Upstream"]
+    workflows: [Sync Upstream]
     types: [completed]
 
 permissions:

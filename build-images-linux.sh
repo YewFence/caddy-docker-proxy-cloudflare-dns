@@ -12,7 +12,7 @@ OUTPUT="type=local,dest=local"
 TAGS=
 TAGS_ALPINE=
 REGISTRY="ghcr.io"
-IMAGE_NAME="ghcr.io/YewFence/caddy-docker-proxy-cloudflare-dns"
+IMAGE_NAME="ghcr.io/yewfence/caddy-docker-proxy-cloudflare-dns"
 PUSH_IMAGES="${PUSH_IMAGES:-false}"
 
 if [[ "${PUSH_IMAGES}" == "true" ]]; then

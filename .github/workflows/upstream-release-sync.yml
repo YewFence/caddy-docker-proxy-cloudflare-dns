@@ -61,7 +61,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'upstream-sync.yml',
-              ref: 'master'
+              ref: 'fork-main'
             });
             core.info('Triggered upstream-sync.yml, will create tag after it completes.');
 

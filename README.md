@@ -1,6 +1,8 @@
 # Caddy-Docker-Proxy-Cloudflare-DNS
 [![CI Pipeline](https://github.com/YewFence/caddy-docker-proxy-cloudflare-dns/actions/workflows/ci-pipeline.yaml/badge.svg)](https://github.com/YewFence/caddy-docker-proxy-cloudflare-dns/actions/workflows/ci-pipeline.yaml)
 
+中文版本: [README.zh-CN](README.zh-CN.md)
+
 ## Introduction
 This plugin enables Caddy to be used as a reverse proxy for Docker containers via labels.
 This fork ships with the Cloudflare DNS plugin (`github.com/caddy-dns/cloudflare`) built in, so you can use DNS-01 challenges without building a custom image.
@@ -9,6 +11,11 @@ This fork ships with the Cloudflare DNS plugin (`github.com/caddy-dns/cloudflare
 This repo runs a GitHub Actions workflow to sync changes from the upstream `lucaslorentz/caddy-docker-proxy` repository.
 If it can be fast-forwarded, it will update `master` directly; otherwise it opens a PR for manual conflict resolution.
 Then it will automatically try to merge the update into `fork-main`.
+
+> Note: The content below comes from the upstream repository's README.
+
+---
+
 
 ## How does it work?
 The plugin scans Docker metadata, looking for labels indicating that the service or container should be served by Caddy.

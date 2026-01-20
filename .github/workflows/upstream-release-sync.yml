@@ -21,6 +21,11 @@ jobs:
       has_new_release: ${{ steps.check.outputs.has_new_release }}
       latest_tag: ${{ steps.check.outputs.latest_tag }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Check upstream for new release
         id: check
         run: |

@@ -2,7 +2,7 @@ name: Sync Upstream
 
 on:
   schedule:
-    - cron: "0 3 * * 0"
+    - cron: "0 4 * * *"
   workflow_dispatch:
 
 permissions:
@@ -10,26 +10,32 @@ permissions:
   pull-requests: write
 
 jobs:
-  sync:
+  check_upstream:
     runs-on: ubuntu-latest
+    outputs:
+      upstream_has_new: ${{ steps.check_commits.outputs.upstream_has_new }}
+      has_new_release: ${{ steps.check_release.outputs.has_new_release }}
+      latest_tag: ${{ steps.check_release.outputs.latest_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: master
           fetch-depth: 0
+
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/lucaslorentz/caddy-docker-proxy.git
           git fetch upstream master
-      - name: Try fast-forward
-        id: ff
+
+      - name: Check upstream commits
+        id: check_commits
         run: |
-          git fetch upstream master
           upstream_ahead=$(git rev-list --count master..upstream/master)
           echo "upstream_ahead=${upstream_ahead}" >> "$GITHUB_OUTPUT"
           if [ "${upstream_ahead}" -gt 0 ]; then
@@ -37,59 +43,100 @@ jobs:
           else
             echo "upstream_has_new=false" >> "$GITHUB_OUTPUT"
           fi
-          if [ "${upstream_ahead}" -eq 0 ]; then
-            echo "ff_success=true" >> "$GITHUB_OUTPUT"
-            echo "master_updated=false" >> "$GITHUB_OUTPUT"
+
+      - name: Check upstream release
+        id: check_release
+        run: |
+          latest_tag=$(git ls-remote --tags --refs https://github.com/lucaslorentz/caddy-docker-proxy.git "v[0-9]*.[0-9]*.[0-9]*" | awk -F/ '{print $3}' | sort -V | tail -n 1)
+          if [ -z "${latest_tag}" ]; then
+            echo "::warning::No upstream release tags found."
+            echo "has_new_release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "latest_tag=${latest_tag}" >> "$GITHUB_OUTPUT"
+          # 检查 origin 是否已有此 tag
+          if git ls-remote --tags --refs origin "refs/tags/${latest_tag}" | grep -q .; then
+            echo "Tag ${latest_tag} already exists in origin."
+            echo "has_new_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New release detected: ${latest_tag}"
+            echo "has_new_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  sync_code:
+    needs: check_upstream
+    if: needs.check_upstream.outputs.upstream_has_new == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/lucaslorentz/caddy-docker-proxy.git
+          git fetch upstream master
+
+      - name: Try fast-forward master
+        id: ff
+        run: |
           if git merge --ff-only upstream/master; then
             echo "ff_success=true" >> "$GITHUB_OUTPUT"
-            echo "master_updated=true" >> "$GITHUB_OUTPUT"
           else
             echo "ff_success=false" >> "$GITHUB_OUTPUT"
-            echo "master_updated=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Push fast-forward
-        if: steps.ff.outputs.master_updated == 'true'
-        id: push_master
+
+      - name: Push master (fast-forward)
+        if: steps.ff.outputs.ff_success == 'true'
         run: git push origin master
-      - name: Create PR branch
-        if: steps.ff.outputs.ff_success != 'true' && steps.ff.outputs.upstream_has_new == 'true'
+
+      - name: Create PR branch (conflict)
+        if: steps.ff.outputs.ff_success != 'true'
         id: pr_branch
         run: |
           branch="upstream-sync-$(date +%Y%m%d%H%M%S)"
           git checkout -b "$branch" upstream/master
           git push origin "$branch"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
-      - name: Open pull request
-        if: steps.ff.outputs.ff_success != 'true' && steps.ff.outputs.upstream_has_new == 'true'
+
+      - name: Open pull request (conflict)
+        if: steps.ff.outputs.ff_success != 'true'
         uses: actions/github-script@v7
         with:
           script: |
-            try {
-              const owner = context.repo.owner;
-              const repo = context.repo.repo;
-              const branch = "${{ steps.pr_branch.outputs.branch }}";
-              const head = `${owner}:${branch}`;
-              const base = "master";
-              const title = "chore(upstream): sync lucaslorentz/caddy-docker-proxy";
-              const body = [
-                "Upstream has new changes and fast-forward sync failed.",
-                "",
-                "Please resolve conflicts and merge this PR."
-              ].join("\n");
-              const prs = await github.rest.pulls.list({
-                owner,
-                repo,
-                head,
-                state: "open"
-              });
-              if (prs.data.length === 0) {
-                await github.rest.pulls.create({ owner, repo, head, base, title, body });
-              }
-            } catch (error) {
-              core.setFailed(`Failed to open upstream sync PR: ${error.message}`);
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const branch = "${{ steps.pr_branch.outputs.branch }}";
+            const head = `${owner}:${branch}`;
+            const base = "master";
+            const title = "chore(upstream): sync lucaslorentz/caddy-docker-proxy";
+            const body = [
+              "Upstream has new changes and fast-forward sync failed.",
+              "",
+              "Please resolve conflicts and merge this PR."
+            ].join("\n");
+            const prs = await github.rest.pulls.list({
+              owner,
+              repo,
+              head,
+              state: "open"
+            });
+            let prUrl;
+            if (prs.data.length === 0) {
+              const pr = await github.rest.pulls.create({ owner, repo, head, base, title, body });
+              prUrl = pr.data.html_url;
+            } else {
+              prUrl = prs.data[0].html_url;
             }
+            core.setFailed(`Fast-forward failed. PR created: ${prUrl}. Please resolve conflicts manually.`);
+
       - name: Check fork-main status
         id: fork_status
         run: |
@@ -98,53 +145,134 @@ jobs:
             echo "origin/fork-main not found. Please create the fork-main branch first." >&2
             exit 1
           fi
-          fork_main_behind=$(git rev-list --count origin/fork-main..master)
+          fork_main_behind=$(git rev-list --count origin/fork-main..origin/master)
           echo "fork_main_behind=${fork_main_behind}" >> "$GITHUB_OUTPUT"
           if [ "${fork_main_behind}" -gt 0 ]; then
             echo "fork_main_needs_merge=true" >> "$GITHUB_OUTPUT"
           else
             echo "fork_main_needs_merge=false" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Merge master into fork-main
         if: steps.fork_status.outputs.fork_main_needs_merge == 'true'
         id: fork_merge
         run: |
           git checkout -B fork-main origin/fork-main
-          if git merge --no-edit master; then
+          if git merge --no-edit origin/master; then
             echo "merged=true" >> "$GITHUB_OUTPUT"
           else
             git merge --abort
             echo "merged=false" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Push fork-main
         if: steps.fork_merge.outputs.merged == 'true'
         run: git push origin fork-main
-      - name: Open fork-main merge PR
+
+      - name: Open fork-main merge PR (conflict)
         if: steps.fork_merge.outputs.merged == 'false'
         uses: actions/github-script@v7
         with:
           script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const head = "master";
+            const base = "fork-main";
+            const title = "chore(upstream): merge master into fork-main";
+            const body = [
+              "master was updated from upstream, but merging into fork-main caused conflicts.",
+              "",
+              "Please resolve conflicts and merge this PR."
+            ].join("\n");
+            const prs = await github.rest.pulls.list({
+              owner,
+              repo,
+              head: `${owner}:${head}`,
+              base,
+              state: "open"
+            });
+            let prUrl;
+            if (prs.data.length === 0) {
+              const pr = await github.rest.pulls.create({ owner, repo, head, base, title, body });
+              prUrl = pr.data.html_url;
+            } else {
+              prUrl = prs.data[0].html_url;
+            }
+            core.setFailed(`Merge into fork-main failed. PR created: ${prUrl}. Please resolve conflicts manually.`);
+
+  create_release:
+    needs: [check_upstream, sync_code]
+    if: |
+      always() &&
+      needs.check_upstream.result == 'success' &&
+      needs.check_upstream.outputs.has_new_release == 'true' &&
+      (needs.sync_code.result == 'success' || needs.sync_code.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork-main
+        uses: actions/checkout@v4
+        with:
+          ref: fork-main
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Pull latest fork-main
+        run: git pull origin fork-main
+
+      - name: Verify tag commit is in fork-main
+        run: |
+          tag="${{ needs.check_upstream.outputs.latest_tag }}"
+          # 获取上游 tag 对应的 commit（使用 ^{} 解引用 annotated tag）
+          tag_commit=$(git ls-remote --tags https://github.com/lucaslorentz/caddy-docker-proxy.git "refs/tags/${tag}^{}" | awk '{print $1}')
+          # 如果没有 ^{} 结果，说明是 lightweight tag，直接获取
+          if [ -z "${tag_commit}" ]; then
+            tag_commit=$(git ls-remote --tags https://github.com/lucaslorentz/caddy-docker-proxy.git "refs/tags/${tag}" | awk '{print $1}')
+          fi
+          if [ -z "${tag_commit}" ]; then
+            echo "::error::Cannot find commit for tag ${tag} in upstream."
+            exit 1
+          fi
+          # 检查该 commit 是否已在 fork-main 中
+          if ! git merge-base --is-ancestor "${tag_commit}" HEAD; then
+            echo "::error::Tag ${tag} commit (${tag_commit}) is not yet in fork-main. Please wait for sync_code to complete successfully."
+            exit 1
+          fi
+          echo "Verified: tag ${tag} commit (${tag_commit}) is in fork-main."
+
+      - name: Create and push tag on fork-main
+        run: |
+          tag="${{ needs.check_upstream.outputs.latest_tag }}"
+          git tag -a "${tag}" -m "chore(release): sync upstream ${tag}"
+          git push origin "${tag}"
+
+      - name: Create release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = "${{ needs.check_upstream.outputs.latest_tag }}";
+            const body = [
+              `Synced from upstream release.`,
+              ``,
+              `Upstream: https://github.com/lucaslorentz/caddy-docker-proxy/releases/tag/${tag}`
+            ].join("\n");
             try {
-              const owner = context.repo.owner;
-              const repo = context.repo.repo;
-              const head = "master";
-              const base = "fork-main";
-              const title = "chore(upstream): merge master into fork-main";
-              const body = [
-                "master was updated from upstream, but merging into fork-main caused conflicts.",
-                "",
-                "Please resolve conflicts and merge this PR."
-              ].join("\n");
-              const prs = await github.rest.pulls.list({
-                owner,
-                repo,
-                head: `${owner}:${head}`,
-                base,
-                state: "open"
+              await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_name: tag,
+                name: tag,
+                body,
+                prerelease: false,
+                draft: false
               });
-              if (prs.data.length === 0) {
-                await github.rest.pulls.create({ owner, repo, head, base, title, body });
-              }
             } catch (error) {
-              core.setFailed(`Failed to open fork-main merge PR: ${error.message}`);
+              if (error.status === 422 && error.message.includes('already_exists')) {
+                console.log(`Release ${tag} already exists, skipping.`);
+              } else {
+                throw error;
+              }
             }

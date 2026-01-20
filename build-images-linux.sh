@@ -11,34 +11,36 @@ PLATFORMS="linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64"
 OUTPUT="type=local,dest=local"
 TAGS=
 TAGS_ALPINE=
+REGISTRY="ghcr.io"
+IMAGE_NAME="ghcr.io/yewfence/caddy-docker-proxy-cloudflare-dns"
+PUSH_IMAGES="${PUSH_IMAGES:-false}"
 
-if [[ "${GITHUB_REF}" == "refs/heads/master" ]]; then
-    echo "Building and pushing CI images"
+if [[ "${PUSH_IMAGES}" == "true" ]]; then
+    echo "Logging in to ${REGISTRY}..."
+    docker login "${REGISTRY}" -u "${GITHUB_ACTOR}" -p "${GITHUB_TOKEN}"
 
-    docker login -u lucaslorentz -p "$DOCKER_PASSWORD"
+    if [[ "${GITHUB_REF}" == "refs/heads/fork-main" ]]; then
+        echo "Building and pushing CI images"
+        OUTPUT="type=registry"
+        TAGS="-t ${IMAGE_NAME}:ci"
+        TAGS_ALPINE="-t ${IMAGE_NAME}:ci-alpine"
+    elif [[ "${GITHUB_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-.*)?$ ]]; then
+        RELEASE_VERSION=$(echo $GITHUB_REF | cut -c11-)
+        echo "Releasing version ${RELEASE_VERSION}..."
 
-    OUTPUT="type=registry"
-    TAGS="-t lucaslorentz/caddy-docker-proxy:ci"
-    TAGS_ALPINE="-t lucaslorentz/caddy-docker-proxy:ci-alpine"
-fi
+        PATCH_VERSION=$(echo $RELEASE_VERSION | cut -c2-)
+        MINOR_VERSION=$(echo $PATCH_VERSION | cut -d. -f-2)
 
-if [[ "${GITHUB_REF}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-.*)?$ ]]; then
-    RELEASE_VERSION=$(echo $GITHUB_REF | cut -c11-)
-
-    echo "Releasing version ${RELEASE_VERSION}..."
-
-    docker login -u lucaslorentz -p "$DOCKER_PASSWORD"
-
-    PATCH_VERSION=$(echo $RELEASE_VERSION | cut -c2-)
-    MINOR_VERSION=$(echo $PATCH_VERSION | cut -d. -f-2)
-
-    OUTPUT="type=registry"
-    TAGS="-t lucaslorentz/caddy-docker-proxy:latest \
-        -t lucaslorentz/caddy-docker-proxy:${PATCH_VERSION} \
-        -t lucaslorentz/caddy-docker-proxy:${MINOR_VERSION}"
-    TAGS_ALPINE="-t lucaslorentz/caddy-docker-proxy:alpine \
-        -t lucaslorentz/caddy-docker-proxy:${PATCH_VERSION}-alpine \
-        -t lucaslorentz/caddy-docker-proxy:${MINOR_VERSION}-alpine"
+        OUTPUT="type=registry"
+        TAGS="-t ${IMAGE_NAME}:latest \
+            -t ${IMAGE_NAME}:${PATCH_VERSION} \
+            -t ${IMAGE_NAME}:${MINOR_VERSION}"
+        TAGS_ALPINE="-t ${IMAGE_NAME}:alpine \
+            -t ${IMAGE_NAME}:${PATCH_VERSION}-alpine \
+            -t ${IMAGE_NAME}:${MINOR_VERSION}-alpine"
+    else
+        echo "::warning::PUSH_IMAGES=true, but GITHUB_REF '${GITHUB_REF}' does not match fork-main or a version tag. Falling back to local build."
+    fi
 fi
 
 docker buildx build -f Dockerfile . \
